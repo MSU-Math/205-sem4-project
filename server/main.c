@@ -14,6 +14,8 @@ static struct {
     int is_terminating;
 } STATE = {0};
 
+int return_401(int client);
+
 void sigint_handler(int signal)
 {
     STATE.is_terminating = 1;
@@ -121,32 +123,8 @@ int main(void)
 
         FILE *f = fdopen(client, "r+");
 
-        char method[8] = {0};
-        char path[PATH_MAX+1] = {0};
-        int result = fscanf(f, "%7[A-Z] %4096[^ ] HTTP", method, path);
-        if (result == 2) {
-            printf("Client asks to %s path: %s\n", method, path);
-            fputs(path, last_file);
-            fputs("<br/>", last_file);
-            fflush(last_file);
-            const char *response = "HTTP/1.1 200 OK\n"
-                "Content-Type: text/html; charset=UTF-8\n"
-                "\n"
-                "Hello, world!\nТест\n<a href=\"test\">test</a>\n\n<h1>Last paths:</h1><br/><pre>\n\n<";
-            send(client, response, strlen(response), 0);
-            send(client, last, last_size, 0);
-            send(client, "</pre>", strlen("</pre>"), 0);
-            if (last_size > 1 * 1024 * 1024) {
-                printf("Resetting buffer\n");
-                fclose(last_file);
-                free(last);
-                last = NULL;
-                last_size = 0;
-                last_file = open_memstream(&last, &last_size);
-            }
-        } else {
-            printf("Fscanf read %d patterns\n", result);
-        }
+        return_401(client);
+        fclose(f);
         close(client);
         STATE.is_in_process = 0;
     }
@@ -154,4 +132,11 @@ int main(void)
     close(STATE.server_fd);
 
     return EXIT_SUCCESS;
+}
+
+int return_401(int client)
+{
+    const char *response = "HTTP/1.1 401  Unauthorized\r\n"
+        "WWW-Authenticate: Basic realm=\"Access to the staging site\", charset=\"UTF-8\"\r\n\r\n";
+    return send(client, response, strlen(response), 0) > 0;
 }
