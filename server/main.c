@@ -14,7 +14,17 @@ static struct {
     int is_terminating;
 } STATE = {0};
 
+struct request {
+    int authorization_size;
+    char *authorization;
+    char *method;
+    char *path;
+};
+
 int return_401(int client);
+int return_200(int client, const struct request *request);
+int parse_request(ssize_t size, const char buffer[size], struct request *request);
+#define REQUEST_SIZE 4096
 
 void sigint_handler(int signal)
 {
@@ -101,6 +111,7 @@ int main(void)
     }
 
     printf("Socket: %d\n", STATE.server_fd);
+    char *buffer = malloc(REQUEST_SIZE * sizeof(char));
     while (!STATE.is_terminating) {
         struct sockaddr client_address;
         socklen_t length;
@@ -121,14 +132,21 @@ int main(void)
         }
         printf("\n");
 
-        FILE *f = fdopen(client, "r+");
-
-        return_401(client);
+        ssize_t size = read(client, buffer, REQUEST_SIZE * sizeof(char));
+        struct request request;
+        parse_request(size, buffer, &request);
+        if (!request.authorization) {
+            return_401(client);
+        } else {
+            return_200(client, &request);
+            free(request.authorization);
+        }
         fclose(f);
         close(client);
         STATE.is_in_process = 0;
     }
 
+    free(buffer);
     close(STATE.server_fd);
 
     return EXIT_SUCCESS;
@@ -139,4 +157,49 @@ int return_401(int client)
     const char *response = "HTTP/1.1 401  Unauthorized\r\n"
         "WWW-Authenticate: Basic realm=\"Access to the staging site\", charset=\"UTF-8\"\r\n\r\n";
     return send(client, response, strlen(response), 0) > 0;
+}
+
+#define AUTH_SIZE 256
+#define REQUEST_END 1
+int parse_request(ssize_t size, const char buffer[size], struct request *request)
+{
+    int offset = 0;
+    while (offset < size) {
+        while (buffer[offset] != '\n') {
+            offset += 1;
+        }
+        offset += 1;
+        if (!strncmp("Authorization: ", buffer+offset, sizeof("Authorization: "))) {
+            offset += sizeof("Authorization: ");
+            while (buffer[offset] == ' ') {
+                offset += 1;
+            }
+            request->authorization = &buffer[offset];
+        }
+    }
+    while ((c = fgetc(stream)) > 0) {
+        if (c != '\n') {
+            fputc(c, stdout);
+            continue;
+        }
+        fputc('\n', stdout);
+        // ищем: \nAuthorization: 
+        if (!request->authorization && fscanf(stream, "Authorization: %256s", authorization) == 1) {
+            // сохраняем то, что идёт дальшe, пропустив все пробелы
+            request->authorization = authorization;
+        }
+    }
+    return 0;
+}
+
+int return_200(int client, const struct request *request)
+{
+    const char *response = "HTTP/1.1 200 OK\r\n"
+        "Content-Type: text/plain, encoding=utf-8\r\n"
+        "\r\n"
+        "Hello, ";
+    int status = 0;
+    status |= send(client, response, strlen(response), 0) > 0;
+    status |= send(client, request->authorization, strlen(request->authorization), 0) > 0;
+    return status;
 }
