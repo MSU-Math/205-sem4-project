@@ -21,13 +21,17 @@ struct request {
     char *path;
 };
 
-int return_401(int client);
-int return_200(int client, const struct request *request);
-int parse_request(ssize_t size, const char buffer[size], struct request *request);
+int return_401(FILE *output);
+int return_200(FILE *output, const struct request *request);
+int parse_request(FILE *input, struct request *request);
 #define REQUEST_SIZE 4096
+
+#define xstr(s) str(s)
+#define str(s) #s
 
 void sigint_handler(int signal)
 {
+    (void)signal;
     STATE.is_terminating = 1;
     if (!STATE.is_in_process && STATE.server_fd != -1) {
         write(0, "closing\n", 8);
@@ -40,10 +44,6 @@ int main(void)
 {
     int error;
     struct addrinfo *result;
-
-    char *last;
-    size_t last_size;
-    FILE *last_file = open_memstream(&last, &last_size);
 
     struct addrinfo hints = {
         .ai_family = AF_INET,
@@ -86,7 +86,7 @@ int main(void)
         }
 
         int reuseaddr = 1;
-        int err = setsockopt(STATE.server_fd, SOL_SOCKET, SO_REUSEADDR, &reuseaddr, sizeof(reuseaddr));
+        error = setsockopt(STATE.server_fd, SOL_SOCKET, SO_REUSEADDR, &reuseaddr, sizeof(reuseaddr));
 
         if (!bind(STATE.server_fd, result->ai_addr, result->ai_addrlen)) {
             break;
@@ -111,7 +111,6 @@ int main(void)
     }
 
     printf("Socket: %d\n", STATE.server_fd);
-    char *buffer = malloc(REQUEST_SIZE * sizeof(char));
     while (!STATE.is_terminating) {
         struct sockaddr client_address;
         socklen_t length;
@@ -126,65 +125,51 @@ int main(void)
             continue;
         }
 
-        printf("Connected: ");
-        for (int i = 0; i < length; i++) {
-            printf("%x ", client_address.sa_data[i]);
-        }
-        printf("\n");
-
-        ssize_t size = read(client, buffer, REQUEST_SIZE * sizeof(char));
         struct request request;
-        parse_request(size, buffer, &request);
+        
+        FILE *input = fdopen(client, "r");
+        parse_request(input, &request);
+        
+        FILE *output = fdopen(client, "w");
         if (!request.authorization) {
-            return_401(client);
+            return_401(output);
         } else {
-            return_200(client, &request);
+            return_200(output, &request);
             free(request.authorization);
         }
-        fclose(f);
+        fclose(input);
+        fclose(output);
+        
         close(client);
         STATE.is_in_process = 0;
     }
 
-    free(buffer);
     close(STATE.server_fd);
 
     return EXIT_SUCCESS;
 }
 
-int return_401(int client)
+int return_401(FILE *output)
 {
     const char *response = "HTTP/1.1 401  Unauthorized\r\n"
         "WWW-Authenticate: Basic realm=\"Access to the staging site\", charset=\"UTF-8\"\r\n\r\n";
-    return send(client, response, strlen(response), 0) > 0;
+    return fputs(response, output) > 0;
 }
 
 #define AUTH_SIZE 256
 #define REQUEST_END 1
-int parse_request(ssize_t size, const char buffer[size], struct request *request)
+int parse_request(FILE *input, struct request *request)
 {
-    int offset = 0;
-    while (offset < size) {
-        while (buffer[offset] != '\n') {
-            offset += 1;
-        }
-        offset += 1;
-        if (!strncmp("Authorization: ", buffer+offset, sizeof("Authorization: "))) {
-            offset += sizeof("Authorization: ");
-            while (buffer[offset] == ' ') {
-                offset += 1;
-            }
-            request->authorization = &buffer[offset];
-        }
-    }
-    while ((c = fgetc(stream)) > 0) {
+    char *authorization = malloc((AUTH_SIZE+1) * sizeof(char));
+    int c;
+    while ((c = fgetc(input)) > 0) {
         if (c != '\n') {
             fputc(c, stdout);
             continue;
         }
         fputc('\n', stdout);
         // ищем: \nAuthorization: 
-        if (!request->authorization && fscanf(stream, "Authorization: %256s", authorization) == 1) {
+        if (!request->authorization && fscanf(input, "Authorization: %[^\r\n]" xstr(AUTH_SIZE) "s", authorization) == 1) {
             // сохраняем то, что идёт дальшe, пропустив все пробелы
             request->authorization = authorization;
         }
@@ -192,14 +177,14 @@ int parse_request(ssize_t size, const char buffer[size], struct request *request
     return 0;
 }
 
-int return_200(int client, const struct request *request)
+int return_200(FILE *output, const struct request *request)
 {
     const char *response = "HTTP/1.1 200 OK\r\n"
         "Content-Type: text/plain, encoding=utf-8\r\n"
         "\r\n"
         "Hello, ";
-    int status = 0;
-    status |= send(client, response, strlen(response), 0) > 0;
-    status |= send(client, request->authorization, strlen(request->authorization), 0) > 0;
+    
+    int status = fputs(response, output) > 0;
+    status |= fputs(request->authorization, output) > 0;
     return status;
 }
