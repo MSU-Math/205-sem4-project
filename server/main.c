@@ -125,7 +125,7 @@ int main(void)
             continue;
         }
 
-        struct request request;
+        struct request request = {0};
         
         FILE *input = fdopen(client, "r");
         parse_request(input, &request);
@@ -137,8 +137,8 @@ int main(void)
             return_200(output, &request);
             free(request.authorization);
         }
-        fclose(input);
         fclose(output);
+        fclose(input);
         
         close(client);
         STATE.is_in_process = 0;
@@ -160,18 +160,15 @@ int return_401(FILE *output)
 #define REQUEST_END 1
 int parse_request(FILE *input, struct request *request)
 {
-    char *authorization = malloc((AUTH_SIZE+1) * sizeof(char));
-    int c;
-    while ((c = fgetc(input)) > 0) {
-        if (c != '\n') {
-            fputc(c, stdout);
-            continue;
-        }
-        fputc('\n', stdout);
-        // ищем: \nAuthorization: 
-        if (!request->authorization && fscanf(input, "Authorization: %[^\r\n]" xstr(AUTH_SIZE) "s", authorization) == 1) {
-            // сохраняем то, что идёт дальшe, пропустив все пробелы
-            request->authorization = authorization;
+    request->authorization = NULL;
+
+    char *line = NULL;
+    size_t size = 0;
+    while (getline(&line, &size, input) > 0 && line[0] > ' ') {
+        if (!strncmp(line, "Authorization: ", sizeof("Authorization: ") - 1)) {
+            request->authorization = line;
+            line = NULL;
+            size = 0;
         }
     }
     return 0;
